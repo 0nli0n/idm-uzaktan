@@ -28,7 +28,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 APP_ID = "idmuzaktan"
 DISCOVERY_MAGIC = b"IDMUZAKTAN_KESIF"
 
@@ -137,6 +137,20 @@ def _to_int(v):
     return None
 
 
+def _reg_str(data):
+    """REG_SZ ya da UTF-16 olarak saklanmis REG_BINARY degerini metne cevirir."""
+    if isinstance(data, str):
+        return data.strip("\x00").strip()
+    if isinstance(data, (bytes, bytearray)) and len(data) >= 4 and len(data) % 2 == 0:
+        try:
+            t = bytes(data).decode("utf-16-le").split("\x00")[0].strip()
+        except UnicodeDecodeError:
+            return None
+        if t and all(c.isprintable() for c in t):
+            return t
+    return None
+
+
 def _basename_any(p):
     return re.split(r"[\\/]", p.rstrip("\\/"))[-1] if p else ""
 
@@ -217,8 +231,9 @@ class IdmBackend:
         vals = self._reg_root_values()
         for name in ("LocalPathW", "LocalPath", "DefaultPath"):
             v = vals.get(name)
-            if v and isinstance(v[0], str) and os.path.isdir(v[0]):
-                return v[0]
+            t = _reg_str(v[0]) if v else None
+            if t and os.path.isdir(t):
+                return t
         return None
 
     def temp_base(self):
@@ -228,9 +243,10 @@ class IdmBackend:
         vals = self._reg_root_values()
         for name in ("TempPath", "TempPathW"):
             v = vals.get(name)
-            if v and isinstance(v[0], str) and os.path.isdir(v[0]):
-                d = os.path.join(v[0], "DwnlData")
-                return d if os.path.isdir(d) else v[0]
+            t = _reg_str(v[0]) if v else None
+            if t and os.path.isdir(t):
+                d = os.path.join(t, "DwnlData")
+                return d if os.path.isdir(d) else t
         appdata = os.environ.get("APPDATA")
         if appdata:
             d = os.path.join(appdata, "IDM", "DwnlData")
@@ -318,10 +334,12 @@ class IdmBackend:
         def collect(vals):
             for name, (data, _typ) in vals.items():
                 n = name.lower()
-                if "path" in n and "temp" not in n and isinstance(data, str) and data.strip():
-                    p = os.path.expandvars(data.strip())
-                    if os.path.isdir(p):
-                        found.append(p)
+                if "path" in n and "temp" not in n:
+                    t = _reg_str(data)
+                    if t:
+                        p = os.path.expandvars(t)
+                        if os.path.isdir(p):
+                            found.append(p)
 
         try:
             root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_ROOT)
@@ -514,7 +532,7 @@ class IdmBackend:
             v = vals.get("Status")
             k = str(v[0]) if v else "yok"
             status_counts[k] = status_counts.get(k, 0) + 1
-        root_vals = {k: str(v[0])[:160] for k, v in self._reg_root_values().items()
+        root_vals = {k: (_reg_str(v[0]) or str(v[0]))[:160] for k, v in self._reg_root_values().items()
                      if "path" in k.lower() or k.lower().startswith("exe")}
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_ROOT) as root:
