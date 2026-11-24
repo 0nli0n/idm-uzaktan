@@ -28,7 +28,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP_ID = "idmuzaktan"
 DISCOVERY_MAGIC = b"IDMUZAKTAN_KESIF"
 
@@ -148,6 +148,9 @@ class IdmBackend:
         self.cfg = cfg
         self._prev = {}  # id -> (bytes, time) hiz hesabi icin
         self._lock = threading.Lock()
+        self._fidx = None
+        self._fidx_lock = threading.Lock()
+        self._cat_cache = None
 
     # ---- IDM programi --------------------------------------------------
     def _reg_root_values(self):
@@ -304,81 +307,228 @@ class IdmBackend:
             idx.setdefault("ad:" + stem, (total, mtime))
         return idx
 
-    def list_downloads(self, limit):
+    # ---- Kategori / kayit klasorleri -----------------------------------
+    def category_dirs(self):
+        """IDM ayarlarinda gecen kayit klasorleri (kategori klasorleri dahil)."""
+        now = time.time()
+        if self._cat_cache and now - self._cat_cache[0] < 60:
+            return self._cat_cache[1]
+        found = []
+
+        def collect(vals):
+            for name, (data, _typ) in vals.items():
+                n = name.lower()
+                if "path" in n and "temp" not in n and isinstance(data, str) and data.strip():
+                    p = os.path.expandvars(data.strip())
+                    if os.path.isdir(p):
+                        found.append(p)
+
+        try:
+            root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_ROOT)
+        except OSError:
+            root = None
+        if root is not None:
+            with root:
+                collect(_reg_values(root))
+                i = 0
+                while True:
+                    try:
+                        name = winreg.EnumKey(root, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if name.isdigit():
+                        continue
+                    try:
+                        with winreg.OpenKey(root, name) as k:
+                            collect(_reg_values(k))
+                            j = 0
+                            while j < 200:
+                                try:
+                                    sub = winreg.EnumKey(k, j)
+                                except OSError:
+                                    break
+                                j += 1
+                                try:
+                                    with winreg.OpenKey(k, sub) as k2:
+                                        collect(_reg_values(k2))
+                                except OSError:
+                                    pass
+                    except OSError:
+                        pass
+        self._cat_cache = (now, found)
+        return found
+
+    def temp_parent(self):
+        """IDM gecici klasorunun ust klasoru (ör. F:\\Indirilenler)."""
+        base = self.temp_base()
+        if base and os.path.basename(base.rstrip("\\/")).lower() == "dwnldata":
+            return os.path.dirname(base.rstrip("\\/"))
+        return None
+
+    # ---- Indirme listesi -------------------------------------------------
+    def file_index(self, roots):
+        """Kok klasorlerdeki dosyalar: {kucuk_harf_ad: [(yol, boyut), ...]} (45 sn onbellek)."""
+        now = time.time()
+        key = tuple(roots)
+        with self._fidx_lock:
+            if self._fidx and self._fidx[0] == key and now - self._fidx[1] < 45:
+                return self._fidx[2]
+            idx, count = {}, 0
+            for r in roots:
+                stack = [(r, 0)]
+                while stack and count < 200000:
+                    d, depth = stack.pop()
+                    try:
+                        it = os.scandir(d)
+                    except OSError:
+                        continue
+                    with it:
+                        for e in it:
+                            try:
+                                if e.is_dir(follow_symlinks=False):
+                                    if depth < 3 and e.name.lower() != "dwnldata" and not e.name.startswith("."):
+                                        stack.append((e.path, depth + 1))
+                                elif e.is_file():
+                                    idx.setdefault(e.name.lower(), []).append((e.path, e.stat().st_size))
+                                    count += 1
+                            except OSError:
+                                continue
+            self._fidx = (key, now, idx)
+            return idx
+
+    def list_downloads(self, limit, roots=()):
         entries = self.raw_entries()[:limit]
         tidx = self.temp_index()
+        fidx = self.file_index(list(roots)) if roots else {}
         now = time.time()
         result = []
         with self._lock:
             for did, vals in entries:
-                result.append(self._parse(did, vals, tidx, now))
+                result.append(self._parse(did, vals, tidx, fidx, now))
         return result
 
-    def _parse(self, did, vals, tidx, now):
-        low = {k.lower(): v[0] for k, v in vals.items()}
-        url = ""
-        for k in sorted(low):
-            if k.startswith("url") and isinstance(low[k], str) and "://" in low[k]:
-                url = low[k]
-                break
-        local = low.get("localfilename") if isinstance(low.get("localfilename"), str) else ""
-        fname = low.get("filename") if isinstance(low.get("filename"), str) else ""
-        if not fname:
-            fname = _basename_any(local) or urllib.parse.unquote(
-                _basename_any(urllib.parse.urlparse(url).path)) or ("indirme_%d" % did)
-        size = None
-        for k in ("filesize", "totalsize", "size"):
-            if k in low:
-                size = _to_int(low[k])
-                if size:
-                    break
-        size = size or None
+    @staticmethod
+    def _display_name(low, did, url):
+        for k in ("fr_fncd", "filename"):
+            v = low.get(k)
+            if isinstance(v, str) and v.strip():
+                n = v.split("?")[0].strip()
+                if n:
+                    return n
+        local = low.get("localfilename")
+        if isinstance(local, str) and local:
+            return _basename_any(local)
+        n = urllib.parse.unquote(_basename_any(urllib.parse.urlparse(url).path))
+        return n or ("indirme_%d" % did)
 
-        status, done_bytes, speed = "baslamadi", 0, 0
-        if local and os.path.isfile(local):
-            fsz = os.path.getsize(local)
-            if size is None or fsz >= size:
-                status, done_bytes = "tamamlandi", fsz
-                size = size or fsz
-        if status != "tamamlandi":
-            stem = os.path.splitext(fname)[0].lower()
-            t = tidx.get("id:%d" % did) or tidx.get("ad:" + fname.lower()) or tidx.get("ad:" + stem)
+    def _parse(self, did, vals, tidx, fidx, now):
+        low = {k.lower(): v[0] for k, v in vals.items()}
+        url = low.get("url0") if isinstance(low.get("url0"), str) else ""
+        if "://" not in (url or ""):
+            url = ""
+            for k in sorted(low):
+                if k.startswith("url") and isinstance(low[k], str) and "://" in low[k]:
+                    url = low[k]
+                    break
+        name = self._display_name(low, did, url)
+        size = _to_int(low.get("filesize")) or _to_int(low.get("frfilesize")) or None
+        reg_done = _to_int(low.get("downloaded")) or 0
+        code = _to_int(low.get("status"))
+
+        status, done_bytes, speed, path = "baslamadi", reg_done, 0, ""
+        if code == 3 or (size and reg_done >= size):
+            status = "tamamlandi"
+            done_bytes = size or reg_done
+            cands = fidx.get(name.lower(), [])
+            if size:
+                cands = [c for c in cands if c[1] == size] or []
+            if cands:
+                path = cands[0][0]
+            self._prev.pop(did, None)
+        else:
+            t = tidx.get("id:%d" % did)
+            active = False
             if t:
-                done_bytes, mtime = t
-                status = "indiriliyor" if now - mtime < 10 else "yarim"
-                prev = self._prev.get(did)
-                if prev and now - prev[1] > 0.5 and done_bytes > prev[0]:
-                    speed = int((done_bytes - prev[0]) / (now - prev[1]))
-                if not prev or now - prev[1] > 0.5:
-                    self._prev[did] = (done_bytes, now)
-                if size and done_bytes > size:
-                    done_bytes = size
+                tbytes, mtime = t
+                done_bytes = max(done_bytes, tbytes)
+                active = now - mtime < 10
+            prev = self._prev.get(did)
+            if prev and done_bytes > prev[0] and now - prev[1] < 20:
+                active = True
+                speed = int((done_bytes - prev[0]) / max(now - prev[1], 0.5))
+            if not prev or now - prev[1] > 0.5:
+                self._prev[did] = (done_bytes, now)
+            if active and not speed:
+                speed = _to_int(low.get("speed")) or 0
+            if active:
+                status = "indiriliyor"
+            elif done_bytes > 0 or t:
+                status = "yarim"
+            if size and done_bytes > size:
+                done_bytes = size
         return {
             "id": did,
-            "dosya": fname,
+            "dosya": name,
             "url": url,
-            "yol": local,
+            "yol": path,
             "boyut": size,
             "inen": done_bytes,
             "hiz": speed,
             "durum": status,
+            "idm_durum": code,
         }
 
-    def debug_info(self):
+    # Tanilama raporunda tam gosterilecek alanlar. Digerlerinin yalnizca ADI gosterilir
+    # (cerez, parola, ozel basliklar, imzali linkler raporlara asla girmez).
+    SAFE_FIELDS = {"localfilename", "localpath", "filename", "fr_fncd", "status", "queueid",
+                   "categoryid", "dateadded", "lasttrydate", "filesize", "frfilesize",
+                   "downloaded", "speed", "bsaved", "frctype", "fgdfe", "bgicompl", "host"}
+
+    def debug_info(self, roots=()):
+        entries = self.raw_entries()
         sample = []
-        for did, vals in self.raw_entries()[:3]:
-            items = {}
+        for did, vals in entries[:5]:
+            safe, others = {}, []
             for name, (data, typ) in vals.items():
-                if any(s in name.lower() for s in SENSITIVE):
-                    shown = "<gizlendi>"
-                elif isinstance(data, (bytes, bytearray)):
-                    shown = "<%d bayt ikili veri>" % len(data)
+                if name.lower() in self.SAFE_FIELDS:
+                    if isinstance(data, (bytes, bytearray)):
+                        iv = _to_int(data)
+                        shown = iv if iv is not None else "<%d bayt>" % len(data)
+                    else:
+                        shown = str(data)
+                        if "?" in shown:  # link parametreleri (token vb.) gizlenir
+                            shown = shown.split("?")[0] + "?<gizlendi>"
+                        shown = shown[:160]
+                    safe[name] = {"tip": typ, "deger": shown}
                 else:
-                    shown = str(data)[:160]
-                items[name] = {"tip": typ, "deger": shown}
-            sample.append({"id": did, "degerler": items})
+                    others.append(name)
+            sample.append({"id": did, "degerler": safe, "diger_alan_adlari": sorted(others)})
+        parsed = []
+        for d in self.list_downloads(8, roots):
+            d = dict(d)
+            d["url"] = urllib.parse.urlsplit(d["url"]).netloc if d["url"] else ""
+            parsed.append(d)
+        status_counts = {}
+        for _did, vals in entries:
+            v = vals.get("Status")
+            k = str(v[0]) if v else "yok"
+            status_counts[k] = status_counts.get(k, 0) + 1
         root_vals = {k: str(v[0])[:160] for k, v in self._reg_root_values().items()
-                     if k.lower().endswith("path") or k.lower().startswith("exe")}
+                     if "path" in k.lower() or k.lower().startswith("exe")}
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_ROOT) as root:
+                subkeys, i = [], 0
+                while i < 2000:
+                    try:
+                        n = winreg.EnumKey(root, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if not n.isdigit():
+                        subkeys.append(n)
+        except (OSError, NameError):
+            subkeys = []
         base = self.temp_base()
         tnames = []
         if base:
@@ -393,38 +543,51 @@ class IdmBackend:
             except OSError:
                 pass
         return {
-            "kayit_sayisi": len(self.raw_entries()),
+            "kayit_sayisi": len(entries),
+            "durum_kodlari": status_counts,
+            "uygulamada_gorunen": parsed,
             "ornek_kayitlar": sample,
             "kok_degerler": root_vals,
+            "alt_anahtarlar": subkeys[:50],
+            "kategori_klasorleri": self.category_dirs(),
             "gecici_klasor": base,
             "gecici_klasor_icerik": tnames[:40],
         }
 
 
 class FakeBackend(IdmBackend):
-    """Windows/IDM olmadan test etmek icin sahte katman."""
+    """Windows/IDM olmadan test etmek icin sahte katman (gercek IDM kayit bicimiyle)."""
 
     def __init__(self, cfg):
         super().__init__(cfg)
         self.base = os.path.join(APP_DIR, "_sahte")
         self.dl = os.path.join(self.base, "Downloads")
-        self.tmp = os.path.join(self.base, "DwnlData", "kullanici")
-        os.makedirs(os.path.join(self.dl, "Video"), exist_ok=True)
-        os.makedirs(self.tmp, exist_ok=True)
+        self.tmpbase = os.path.join(self.base, "Indirilenler")
+        self.tmp = os.path.join(self.tmpbase, "DwnlData", "kullanici")
+        for d in (os.path.join(self.dl, "Video"), os.path.join(self.dl, "Compressed"), self.tmp,
+                  os.path.join(self.tmpbase, "Filmler")):
+            os.makedirs(d, exist_ok=True)
         done = os.path.join(self.dl, "Video", "film.mp4")
         if not os.path.exists(done):
             with open(done, "wb") as f:
                 f.write(os.urandom(300000))
-        part = os.path.join(self.tmp, "ubuntu_12")
+        part = os.path.join(self.tmp, "nexus-284_cdn_12")
         os.makedirs(part, exist_ok=True)
-        with open(os.path.join(part, "ubuntu.iso"), "wb") as f:
+        with open(os.path.join(part, "nexus-284_cdn"), "wb") as f:
             f.write(b"\0" * 50000)
+        q = lambda n: (n.to_bytes(8, "little"), 3)  # REG_BINARY 8 bayt
+        tmpname = lambda n, i: (os.path.join(self.tmp, "%s_%d" % (n, i), n), 1)
         self.entries = [
-            (12, {"Url0": ("https://example.com/ubuntu.iso", 1), "FileName": ("ubuntu.iso", 1),
-                  "LocalFileName": (os.path.join(self.dl, "ubuntu.iso"), 1), "FileSize": (200000, 4)}),
+            (12, {"Url0": ("https://nexus-416.cdn.st/dld/4def?token=GIZLI", 1),
+                  "FileName": ("81efaabf?token=GIZLI", 1), "FR_FNCD": ("Oyun.v1.0.zip", 1),
+                  "LocalFileName": tmpname("nexus-284_cdn", 12), "FileSize": q(200000),
+                  "Downloaded": q(20000), "Status": (1, 4), "Speed": (8269610, 4),
+                  "U0_c": ("_gh_sess=GIZLI_CEREZ", 1)}),
             (11, {"Url0": ("https://example.com/film.mp4", 1), "FileName": ("film.mp4", 1),
-                  "LocalFileName": (done, 1), "FileSize": (300000, 4), "Cookies": ("gizli=1", 1)}),
-            (10, {"Url0": ("https://example.com/belge%20yeni.pdf", 1)}),
+                  "FR_FNCD": ("film.mp4", 1), "LocalFileName": tmpname("film", 11),
+                  "FileSize": q(300000), "Downloaded": q(300000), "Status": (3, 4),
+                  "Cookie": ("gizli=1", 1), "CstmHdrs": ("Authorization: GIZLI", 1)}),
+            (10, {"Url0": ("https://example.com/belge%20yeni.pdf", 1), "Status": (0, 4)}),
         ]
         self.commands = []
 
@@ -443,7 +606,10 @@ class FakeBackend(IdmBackend):
         self.commands.append(["reveal", path])
 
     def default_dir(self):
-        return self.dl
+        return None
+
+    def category_dirs(self):
+        return [self.dl, os.path.join(self.dl, "Compressed")]
 
     def temp_base(self):
         return os.path.dirname(self.tmp)
@@ -452,7 +618,7 @@ class FakeBackend(IdmBackend):
         return list(self.entries)
 
     def _reg_root_values(self):
-        return {"ExePath": ("IDMan.exe (sahte)", 1)}
+        return {"ExePath": ("IDMan.exe (sahte)", 1), "TempPath": (self.tmpbase, 1)}
 
 
 # ---------------------------------------------------------------------------
@@ -479,22 +645,37 @@ class App:
             d = self.idm.default_dir()
             if d:
                 cands.append(d)
+            cands += self.idm.category_dirs()
             cands.append(os.path.join(os.path.expanduser("~"), "Downloads"))
-        out, seen = [], set()
+            tp = self.idm.temp_parent()
+            if tp:
+                try:
+                    if any(e.name.lower() != "dwnldata" for e in os.scandir(tp)):
+                        cands.append(tp)
+                except OSError:
+                    pass
+        norm = []
         for c in cands:
             c = os.path.abspath(os.path.expandvars(os.path.expanduser(c)))
-            key = os.path.normcase(os.path.realpath(c))
-            if os.path.isdir(c) and key not in seen:
+            if os.path.isdir(c):
+                norm.append((c, os.path.normcase(os.path.realpath(c))))
+        uniq, seen = [], set()
+        for c, key in norm:
+            if key not in seen:
                 seen.add(key)
-                out.append(c)
-        return out
+                uniq.append((c, key))
+        # baska bir kokun alt klasoru olanlari ele (ör. Downloads\Compressed)
+        out = [c for c, key in uniq
+               if not any(k != key and key.startswith(k.rstrip("\\/") + os.sep) for _, k in uniq)]
+        return out[:10]
 
     def folders(self):
         res = []
         for r in self.roots():
             res.append(r)
             try:
-                subs = sorted(e.path for e in os.scandir(r) if e.is_dir() and not e.name.startswith("."))
+                subs = sorted(e.path for e in os.scandir(r)
+                              if e.is_dir() and not e.name.startswith(".") and e.name.lower() != "dwnldata")
                 res += subs[:30]
             except OSError:
                 pass
@@ -514,11 +695,14 @@ class App:
         return root, full
 
     def path_for_download(self, did):
-        for d in self.idm.list_downloads(100000):
+        for d in self.idm.list_downloads(100000, self.roots()):
             if d["id"] == did:
-                if d["durum"] == "tamamlandi" and d["yol"] and os.path.isfile(d["yol"]):
+                if d["durum"] != "tamamlandi":
+                    raise ApiError(409, "Bu indirme henüz tamamlanmamış")
+                if d["yol"] and os.path.isfile(d["yol"]):
                     return d["yol"]
-                raise ApiError(409, "Bu indirme henüz tamamlanmamış")
+                raise ApiError(404, "Dosya bilgisayarda bulunamadı. Taşınmış ya da silinmiş olabilir; "
+                                    "Dosyalar sekmesinden arayın.")
         raise ApiError(404, "İndirme bulunamadı")
 
     # ---- dogrulama -------------------------------------------------------
@@ -655,7 +839,7 @@ class Handler(BaseHTTPRequestHandler):
             limit = max(1, min(int(q.get("sinir") or self.app.cfg["liste_siniri"]), 5000))
         except ValueError:
             limit = 300
-        items = self.app.idm.list_downloads(limit)
+        items = self.app.idm.list_downloads(limit, self.app.roots())
         self._send_json(200, {"indirmeler": items, "zaman": int(time.time())})
 
     def api_add(self, q):
@@ -708,7 +892,7 @@ class Handler(BaseHTTPRequestHandler):
         entries = []
         try:
             for e in os.scandir(full):
-                if e.name.startswith(".") or e.name.lower() == "desktop.ini":
+                if e.name.startswith(".") or e.name.lower() in ("desktop.ini", "dwnldata"):
                     continue
                 try:
                     st = e.stat()
@@ -737,7 +921,7 @@ class Handler(BaseHTTPRequestHandler):
         self._stream_file(path)
 
     def api_debug(self, q):
-        info = self.app.idm.debug_info()
+        info = self.app.idm.debug_info(self.app.roots())
         info.update({"surum": VERSION, "platform": sys.platform,
                      "python": sys.version.split()[0], "idm_yolu": self.app.idm.exe_path(),
                      "kokler": self.app.roots()})
