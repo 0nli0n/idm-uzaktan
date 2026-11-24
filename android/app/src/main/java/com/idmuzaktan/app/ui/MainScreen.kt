@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CloudOff
@@ -39,7 +40,6 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -165,7 +165,7 @@ fun MainScreen(vm: AppViewModel, conn: Connection) {
                             MenuItem("Kuyruğu başlat", Icons.Filled.PlayArrow) {
                                 menuOpen = false; vm.startQueue()
                             }
-                            MenuItem("IDM'i bilgisayarda aç", Icons.Filled.OpenInNew) {
+                            MenuItem("IDM'i bilgisayarda aç", Icons.AutoMirrored.Filled.OpenInNew) {
                                 menuOpen = false; vm.openIdm()
                             }
                             MenuItem("Yenile", Icons.Filled.Refresh) {
