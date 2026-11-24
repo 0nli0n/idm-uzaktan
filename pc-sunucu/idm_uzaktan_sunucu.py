@@ -28,7 +28,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 APP_ID = "idmuzaktan"
 DISCOVERY_MAGIC = b"IDMUZAKTAN_KESIF"
 

@@ -220,18 +220,27 @@ def _norm(s):
 
 
 def classify_button(text):
-    """Arac cubugu dugme metnini (Ingilizce/Turkce) bir eyleme esler."""
-    t = _norm(text)
+    """Arac cubugu dugme metnini (Ingilizce/Turkce, kisaltmalar dahil) bir eyleme esler."""
+    t = " ".join(_norm(text).split())
     if not t:
         return None
     has = lambda *ws: any(w in t for w in ws)
-    queue = has("queue", "kuyru", "sıra")
+    # Turkce IDM kisaltmalari: "T. Durdur" (Tumunu), "K. Durdur" / "K. Baslat" (Kuyrugu)
+    if t.startswith("t.") and has("durdur"):
+        return "tumunu_durdur"
+    if t.startswith("k."):
+        if has("durdur"):
+            return "kuyrugu_durdur"
+        if has("başlat", "baslat"):
+            return "kuyrugu_baslat"
+        return None
+    queue = has("queue", "kuyru")
     stop = has("stop", "durdur", "duraklat", "pause")
     if queue and stop:
         return "kuyrugu_durdur"
     if queue and has("start", "başlat", "baslat"):
         return "kuyrugu_baslat"
-    if stop and has(" all", "all ", "tümü", "tumu", "hepsi", "tüm", "tum "):
+    if stop and (has("tümü", "tumu", "hepsi") or t.endswith(" all") or " all " in t or t.startswith("all ")):
         return "tumunu_durdur"
     if stop:
         return "durdur"
@@ -318,6 +327,10 @@ class IdmPencere:
         if not btns:
             raise PencereHatasi("IDM araç çubuğunda gerekli düğme bulunamadı (%s). Tanılama bilgisini "
                                 "gönderin." % action)
+        if len({b["id"] for b in btns}) > 1:
+            raise PencereHatasi("IDM araç çubuğunda bu işe uyan birden fazla düğme var (%s); güvenlik "
+                                "için işlem yapılmadı. Tanılama bilgisini gönderin."
+                                % ", ".join(b["metin"] for b in btns))
         return btns[0]
 
     def _post(self, w, b):
