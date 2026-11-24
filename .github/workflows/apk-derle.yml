@@ -43,7 +43,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/release/app-release.apk IDM-Uzaktan.apk
-          TAG="v1.0.0-${GITHUB_RUN_NUMBER}"
+          TAG="surum-${GITHUB_RUN_NUMBER}"
           gh release create "$TAG" IDM-Uzaktan.apk \
             --title "IDM Uzaktan (derleme ${GITHUB_RUN_NUMBER})" \
             --notes "Telefona kurmak icin asagidaki IDM-Uzaktan.apk dosyasina dokunun." \

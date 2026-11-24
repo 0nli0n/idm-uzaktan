@@ -45,6 +45,7 @@ data class ServerInfo(
     val idmRunning: Boolean,
     val roots: List<RootFolder>,
     val folders: List<String>,
+    val windowAutomation: Boolean,
 )
 
 enum class DlStatus { DONE, DOWNLOADING, PARTIAL, NOT_STARTED }
@@ -139,6 +140,7 @@ class IdmApi(private val conn: Connection) {
             idmRunning = o.optBoolean("idm_calisiyor"),
             roots = roots,
             folders = folders,
+            windowAutomation = o.optBoolean("pencere_otomasyonu", false),
         )
     }
 
@@ -177,6 +179,24 @@ class IdmApi(private val conn: Connection) {
 
     suspend fun startQueue(): String = withContext(Dispatchers.IO) {
         request("POST", "/api/kuyruk/baslat").optString("mesaj", "Tamam")
+    }
+
+    suspend fun pause(id: Int): String = withContext(Dispatchers.IO) {
+        request("POST", "/api/indirme/duraklat", JSONObject().put("id", id), readTimeout = 20_000)
+            .optString("mesaj", "Duraklatıldı")
+    }
+
+    suspend fun resume(id: Int): String = withContext(Dispatchers.IO) {
+        request("POST", "/api/indirme/devam", JSONObject().put("id", id), readTimeout = 25_000)
+            .optString("mesaj", "Devam ettiriliyor")
+    }
+
+    suspend fun stopAll(): String = withContext(Dispatchers.IO) {
+        request("POST", "/api/tumunu-durdur", readTimeout = 20_000).optString("mesaj", "Durduruldu")
+    }
+
+    suspend fun stopQueue(): String = withContext(Dispatchers.IO) {
+        request("POST", "/api/kuyruk/durdur", readTimeout = 20_000).optString("mesaj", "Kuyruk durduruldu")
     }
 
     suspend fun openIdm(): String = withContext(Dispatchers.IO) {

@@ -40,11 +40,14 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -164,6 +167,12 @@ fun MainScreen(vm: AppViewModel, conn: Connection) {
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             MenuItem("Kuyruğu başlat", Icons.Filled.PlayArrow) {
                                 menuOpen = false; vm.startQueue()
+                            }
+                            MenuItem("Kuyruğu durdur", Icons.Filled.StopCircle) {
+                                menuOpen = false; vm.stopQueue()
+                            }
+                            MenuItem("Tümünü durdur", Icons.Filled.Stop) {
+                                menuOpen = false; vm.stopAll()
                             }
                             MenuItem("IDM'i bilgisayarda aç", Icons.AutoMirrored.Filled.OpenInNew) {
                                 menuOpen = false; vm.openIdm()
@@ -361,8 +370,15 @@ fun DownloadsTab(vm: AppViewModel) {
                             )
                         }
                     }
+                    val canControl = vm.info?.windowAutomation != false
                     items(shown, key = { it.id }) { d ->
-                        DownloadCard(d) { selectedId = d.id }
+                        val toggle: (() -> Unit)? = when {
+                            !canControl -> null
+                            d.status == DlStatus.DOWNLOADING -> ({ vm.pause(d) })
+                            d.status == DlStatus.PARTIAL -> ({ vm.resume(d) })
+                            else -> null
+                        }
+                        DownloadCard(d, onToggle = toggle) { selectedId = d.id }
                     }
                 }
             }
@@ -376,7 +392,7 @@ fun DownloadsTab(vm: AppViewModel) {
 }
 
 @Composable
-private fun DownloadCard(d: DownloadItem, onClick: () -> Unit) {
+private fun DownloadCard(d: DownloadItem, onToggle: (() -> Unit)? = null, onClick: () -> Unit) {
     ElevatedCard(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -400,6 +416,15 @@ private fun DownloadCard(d: DownloadItem, onClick: () -> Unit) {
                 }
                 Spacer(Modifier.width(8.dp))
                 StatusPill(d.status)
+                if (onToggle != null) {
+                    IconButton(onClick = onToggle) {
+                        if (d.status == DlStatus.DOWNLOADING) {
+                            Icon(Icons.Filled.Pause, contentDescription = "Duraklat")
+                        } else {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = "Devam et")
+                        }
+                    }
+                }
             }
             if (d.status == DlStatus.DOWNLOADING || d.status == DlStatus.PARTIAL) {
                 Spacer(Modifier.height(10.dp))
@@ -483,6 +508,17 @@ private fun DownloadSheet(d: DownloadItem, vm: AppViewModel, onDismiss: () -> Un
                 vm.reveal(d); onDismiss()
             }
         } else {
+            val canControl = vm.info?.windowAutomation != false
+            if (canControl && d.status == DlStatus.DOWNLOADING) {
+                SheetAction(Icons.Filled.Pause, "Duraklat") {
+                    vm.pause(d); onDismiss()
+                }
+            }
+            if (canControl && (d.status == DlStatus.PARTIAL || d.status == DlStatus.NOT_STARTED)) {
+                SheetAction(Icons.Filled.PlayArrow, "Devam et / Başlat") {
+                    vm.resume(d); onDismiss()
+                }
+            }
             SheetAction(Icons.Filled.PlayArrow, "Kuyruğu başlat") {
                 vm.startQueue(); onDismiss()
             }

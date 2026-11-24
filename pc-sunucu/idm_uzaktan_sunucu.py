@@ -28,7 +28,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 APP_ID = "idmuzaktan"
 DISCOVERY_MAGIC = b"IDMUZAKTAN_KESIF"
 
@@ -41,6 +41,15 @@ FAKE = os.environ.get("IDMUZAKTAN_FAKE") == "1"  # yalnizca test icin
 
 if IS_WIN:
     import winreg  # noqa: E402
+
+idm_pencere = None
+PENCERE_HATA = None
+if IS_WIN:
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import idm_pencere  # noqa: E402  (ayni klasordeki modul)
+    except Exception as _e:  # modul yoksa ya da yuklenemezse diger ozellikler calismaya devam eder
+        PENCERE_HATA = repr(_e)
 
 # pythonw ile (konsolsuz) calisinca stdout yoktur; ciktiyi dosyaya yonlendir.
 if sys.stdout is None or sys.stderr is None:
@@ -222,6 +231,53 @@ class IdmBackend:
 
     def open_idm(self):
         self._run([])
+
+    # ---- Pencere otomasyonu (tek indirmeyi duraklat/devam ettir) ----------
+    def _window(self):
+        if getattr(self, "_win", None) is None and idm_pencere is not None:
+            self._win = idm_pencere.IdmPencere()
+        return getattr(self, "_win", None)
+
+    def window_supported(self):
+        return self._window() is not None
+
+    def _window_call(self, fn, allow_open):
+        w = self._window()
+        if w is None:
+            raise ApiError(501, "Pencere otomasyonu bu bilgisayarda kullanılamıyor (%s)."
+                           % (PENCERE_HATA or "idm_pencere.py dosyası eksik"))
+        try:
+            fn(w)
+        except idm_pencere.PencereHatasi as e:
+            if allow_open and "bulunamadı" in str(e) and "ana penceresi" in str(e):
+                # IDM kapaliysa ac ve bir kez daha dene
+                self.open_idm()
+                time.sleep(4)
+                try:
+                    fn(w)
+                    return
+                except idm_pencere.PencereHatasi as e2:
+                    raise ApiError(409, str(e2))
+            raise ApiError(409, str(e))
+
+    def item_action(self, name, action):
+        self._window_call(lambda w: w.item_action(name, action), allow_open=(action == "devam"))
+
+    def global_action(self, action):
+        self._window_call(lambda w: w.global_action(action), allow_open=False)
+
+    def window_diagnostics(self):
+        w = self._window()
+        if w is None:
+            return {"bulundu": False, "hata": PENCERE_HATA or "idm_pencere.py yok"}
+        return w.diagnostics()
+
+    def name_for_id(self, did):
+        for i, vals in self.raw_entries():
+            if i == did:
+                low = {k.lower(): v[0] for k, v in vals.items()}
+                return self._display_name(low, did, "")
+        return None
 
     def reveal(self, path):
         p = os.path.normpath(path).replace('"', "")
@@ -570,6 +626,7 @@ class IdmBackend:
             "kategori_klasorleri": self.category_dirs(),
             "gecici_klasor": base,
             "gecici_klasor_icerik": tnames[:40],
+            "pencere": self.window_diagnostics(),
         }
 
 
@@ -625,6 +682,22 @@ class FakeBackend(IdmBackend):
 
     def default_dir(self):
         return None
+
+    def window_supported(self):
+        return True
+
+    def item_action(self, name, action):
+        if name == "hata.zip":
+            raise ApiError(409, "Bu indirme IDM penceresindeki listede görünmüyor.")
+        log("SAHTE pencere eylemi: %s -> %s" % (action, name))
+        self.commands.append([action, name])
+
+    def global_action(self, action):
+        log("SAHTE genel eylem: %s" % action)
+        self.commands.append([action])
+
+    def window_diagnostics(self):
+        return {"bulundu": True, "sahte": True}
 
     def category_dirs(self):
         return [self.dl, os.path.join(self.dl, "Compressed")]
@@ -847,6 +920,7 @@ class Handler(BaseHTTPRequestHandler):
             "idm_bulundu": bool(exe),
             "idm_yolu": exe,
             "idm_calisiyor": a.idm.is_running() if exe else False,
+            "pencere_otomasyonu": a.idm.window_supported(),
             "kokler": [{"no": i, "ad": os.path.basename(r.rstrip("\\/")) or r, "yol": r}
                        for i, r in enumerate(roots)],
             "klasorler": a.folders(),
@@ -887,6 +961,36 @@ class Handler(BaseHTTPRequestHandler):
     def api_queue_start(self, q):
         self.app.idm.start_queue()
         self._send_json(200, {"tamam": True, "mesaj": "Kuyruk başlatıldı"})
+
+    def _download_name(self, d):
+        try:
+            did = int(d.get("id"))
+        except (TypeError, ValueError):
+            raise ApiError(400, "Geçersiz id")
+        name = self.app.idm.name_for_id(did)
+        if not name:
+            raise ApiError(404, "İndirme bulunamadı")
+        return name
+
+    def api_item_resume(self, q):
+        name = self._download_name(self._read_json())
+        self.app.idm.item_action(name, "devam")
+        log("Devam ettirildi: %s" % name)
+        self._send_json(200, {"tamam": True, "mesaj": "Devam ettiriliyor: %s" % name})
+
+    def api_item_pause(self, q):
+        name = self._download_name(self._read_json())
+        self.app.idm.item_action(name, "durdur")
+        log("Duraklatıldı: %s" % name)
+        self._send_json(200, {"tamam": True, "mesaj": "Duraklatıldı: %s" % name})
+
+    def api_stop_all(self, q):
+        self.app.idm.global_action("tumunu_durdur")
+        self._send_json(200, {"tamam": True, "mesaj": "Tüm indirmeler durduruldu"})
+
+    def api_queue_stop(self, q):
+        self.app.idm.global_action("kuyrugu_durdur")
+        self._send_json(200, {"tamam": True, "mesaj": "Kuyruk durduruldu"})
 
     def api_open_idm(self, q):
         self.app.idm.open_idm()
@@ -998,6 +1102,10 @@ ROUTES = {
     ("POST", "/api/indirmeler"): Handler.api_add,
     ("POST", "/api/kuyruk/baslat"): Handler.api_queue_start,
     ("POST", "/api/idm/ac"): Handler.api_open_idm,
+    ("POST", "/api/indirme/devam"): Handler.api_item_resume,
+    ("POST", "/api/indirme/duraklat"): Handler.api_item_pause,
+    ("POST", "/api/tumunu-durdur"): Handler.api_stop_all,
+    ("POST", "/api/kuyruk/durdur"): Handler.api_queue_stop,
     ("POST", "/api/klasoru-ac"): Handler.api_reveal,
     ("GET", "/api/dosyalar"): Handler.api_files,
     ("GET", "/api/dosya"): Handler.api_file,

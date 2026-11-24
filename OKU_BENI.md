@@ -12,7 +12,8 @@ Telefon (IDM Uzaktan uygulaması)  ──Wi-Fi──>  Bilgisayar (köprü sunuc
 - Herhangi bir uygulamada (Chrome, Telegram, YouTube…) **Paylaş → "IDM Uzaktan"** ile linki doğrudan bilgisayara göndermek
 - Kayıt klasörünü ve dosya adını seçmek
 - IDM indirme listesini, ilerlemeyi ve hızı görmek (2–5 saniyede bir yenilenir)
-- **Kuyruğu başlatmak**, IDM kapalıysa uzaktan açmak
+- Tek bir indirmeyi **duraklatmak / devam ettirmek**, **tümünü durdurmak**, **kuyruğu başlatmak / durdurmak**
+- IDM kapalıysa uzaktan açmak
 - Bilgisayardaki indirme klasörlerinde gezinmek ve dosyaları **telefona indirmek**
 - Bir dosyanın klasörünü bilgisayarda açmak
 
@@ -61,7 +62,7 @@ Uygulama, projeyle birlikte gelen sabit bir anahtarla imzalanır. Böylece yeni 
 
 IDM'in resmi bir uzaktan kontrol arayüzü yok. Uygulama IDM'in komut satırını ve indirme listesini (Windows kayıt defteri) kullanıyor. Bu yüzden:
 
-- **Tek bir indirmeyi duraklatma veya devam ettirme yok.** IDM bunu dışarıya açmıyor. Kuyruğu başlatabilir ve yeni indirme ekleyebilirsiniz.
+- **Duraklat / Devam et** IDM'in ana penceresi üzerinden çalışır. Sunucu, IDM listesinde ilgili satırı seçer ve IDM'in kendi "Devam" ya da "Durdur" düğmesine basar. Bunun için IDM'in açık olması gerekir; simge durumunda ya da sistem tepsisinde olması sorun değil. IDM'de soldaki kategorilerden **"Tüm indirmeler"** seçili olmalı. Düğmeler yalnızca adlarıyla bulunur, bu yüzden yanlış bir düğmeye (ör. "Sil") basılamaz. IDM güncellemesi pencereyi değiştirirse bu özellik çalışmayabilir; o zaman tanılama bilgisini gönderin. Sunucu klasöründe `idm_pencere.py` dosyasının da bulunması gerekir.
 - **İlerleme ve hız tahminidir.** IDM'in geçici klasöründeki parçaların boyutundan hesaplanır. İlerleme hiç görünmüyorsa IDM'in geçici klasörü farklı bir yerde olabilir. Bu durumda `config.json` içindeki `idm_gecici_klasor` ayarını, IDM → Seçenekler → Kaydetme Yeri'ndeki geçici klasör yoluyla doldurun.
 - **"Yeniden indir"** aynı linki IDM'e tekrar gönderir. IDM bunu yeni bir kopya olarak kaydedebilir.
 - Uygulama yalnızca **aynı Wi-Fi ağında** çalışır; internet üzerinden erişim kapalıdır.

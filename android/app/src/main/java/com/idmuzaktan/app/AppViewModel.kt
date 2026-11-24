@@ -202,6 +202,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         action({ it.addDownload(url, fileName, folder, startNow) })
 
     fun startQueue() = action({ it.startQueue() })
+    fun stopQueue() = action({ it.stopQueue() })
+    fun stopAll() = action({ it.stopAll() })
+    fun pause(item: DownloadItem) = action({ it.pause(item.id) }, after = { refreshSoon() })
+    fun resume(item: DownloadItem) = action({ it.resume(item.id) }, after = { refreshSoon() })
+
+    /** IDM durumu birkac saniye icinde gunceller; listeyi biraz sonra tekrar yenile. */
+    private fun refreshSoon() {
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(2_500)
+            loadDownloads(silent = true)
+        }
+    }
     fun openIdm() = action({ it.openIdm() }, after = { refreshInfo() })
     fun reveal(item: DownloadItem) = action({ it.revealDownload(item.id) })
     fun reveal(root: Int, path: String) = action({ it.revealFile(root, path) })
