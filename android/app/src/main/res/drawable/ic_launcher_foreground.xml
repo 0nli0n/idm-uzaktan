@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monitor + asagi ok: bilgisayara indirme -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- ekran cercevesi -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M32,34h44a4,4 0,0 1,4 4v26a4,4 0,0 1,-4 4H32a4,4 0,0 1,-4 -4V38a4,4 0,0 1,4 -4zM33,39v24h42V39z" />
+    <!-- ayak -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,68h12v5h6v4H42v-4h6z" />
+    <!-- asagi ok -->
+    <path
+        android:fillColor="#7CE0A3"
+        android:pathData="M51,42h6v9h5l-8,9l-8,-9h5z" />
+</vector>

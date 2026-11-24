@@ -1,0 +1,10 @@
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+pc-sunucu/config.json
+pc-sunucu/sunucu.log
+pc-sunucu/__pycache__/
+pc-sunucu/_sahte/
